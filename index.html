@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AlgoCards - Ultra Short-Span Anki Reader</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- JSZip -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- sql.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+      -webkit-tap-highlight-color: transparent;
+    }
+    /* Smooth transition for answer expansion */
+    .answer-expansion {
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: max-height 0.35s ease-out, opacity 0.25s ease-in, padding 0.25s ease;
+    }
+    .answer-expansion.expanded {
+      max-height: 2000px;
+      opacity: 1;
+      transition: max-height 0.5s ease-in, opacity 0.35s ease-out, padding 0.25s ease;
+    }
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- TOP HEADER -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+    <div class="max-w-md mx-auto px-4 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-2 cursor-pointer" onclick="app.showHome()">
+        <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-lg shadow-md shadow-indigo-100">
+          A
+        </div>
+        <span class="font-bold text-slate-800 text-lg tracking-tight">AlgoCards</span>
+      </div>
+      <div id="headerActions" class="hidden flex items-center gap-2">
+        <button onclick="app.triggerJsonInput()" title="進捗JSONを取り込む" class="px-2.5 py-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 text-xs font-semibold flex items-center gap-1 border border-indigo-200 transition-colors">
+          <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+          <span>JSON取込</span>
+        </button>
+        <button onclick="app.exportProgressJson()" title="進捗をJSONで出力" class="px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 text-xs font-semibold flex items-center gap-1 border border-emerald-200 transition-colors">
+          <i data-lucide="download" class="w-3.5 h-3.5"></i>
+          <span>保存</span>
+        </button>
+        <button onclick="app.showHome()" title="デッキ変更" class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100">
+          <i data-lucide="folder" class="w-5 h-5"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hidden File Inputs -->
+  <input type="file" id="apkgInput" accept=".apkg,.zip,application/zip,application/x-zip-compressed,application/octet-stream" class="hidden" onchange="app.handleApkgUpload(event)">
+  <input type="file" id="jsonInput" accept=".json,application/json" class="hidden" onchange="app.handleJsonUpload(event)">
+
+  <!-- MAIN CONTAINER -->
+  <main class="flex-1 max-w-md w-full mx-auto p-4 flex flex-col justify-center">
+
+    <!-- VIEW 1: FILE UPLOAD (STEP 1: APKG ONLY) -->
+    <div id="viewUpload" class="flex flex-col items-center justify-center py-8">
+      <div class="w-full text-center mb-6">
+        <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 mb-4 border border-indigo-100 shadow-sm">
+          <i data-lucide="file-up" class="w-8 h-8"></i>
+        </div>
+        <h1 class="text-xl font-bold text-slate-800">Anki (.apkg) を読み込む</h1>
+        <p class="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
+          Step 1: 最初に Anki デッキファイル (.apkg) を選択してください。
+        </p>
+      </div>
+
+      <!-- APKG UPLOAD BOX -->
+      <div onclick="document.getElementById('apkgInput').click()" 
+           class="w-full border-2 border-dashed border-indigo-200 hover:border-indigo-500 bg-white hover:bg-indigo-50/50 rounded-2xl p-6 text-center cursor-pointer transition-all shadow-sm">
+        <i data-lucide="file-text" class="w-10 h-10 mx-auto text-indigo-500 mb-2"></i>
+        <p class="font-bold text-slate-700 text-sm">.apkg ファイルを選択</p>
+        <p class="text-xs text-slate-400 mt-1">タップして端末からファイルを選択</p>
+      </div>
+
+      <div id="loadingSpinner" class="hidden mt-6 flex flex-col items-center gap-2">
+        <div class="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+        <p id="loadingStatus" class="text-xs font-semibold text-indigo-600">.apkg 解析中...</p>
+      </div>
+    </div>
+
+    <!-- VIEW 2: DASHBOARD & DECK TREE TREE -->
+    <div id="viewDashboard" class="hidden space-y-5">
+      
+      <!-- JSON IMPORT NOTIFICATION BANNER -->
+      <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-3.5 flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <i data-lucide="rotate-ccw" class="w-4 h-4 text-indigo-600 shrink-0"></i>
+          <div>
+            <p class="text-xs font-bold text-indigo-900">前回の進捗を復元しますか？</p>
+            <p class="text-[11px] text-indigo-600">保存済み JSON を取り込んで同期</p>
+          </div>
+        </div>
+        <button onclick="app.triggerJsonInput()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-sm transition-colors shrink-0">
+          JSONを選択
+        </button>
+      </div>
+
+      <!-- STATS OVERVIEW CARD -->
+      <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-sm space-y-3">
+        <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+          <span class="text-xs font-bold text-slate-500">学習統計サマリー</span>
+          <span id="statTotalCards" class="text-xs font-extrabold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">全 0 カード</span>
+        </div>
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+            <p class="text-[10px] text-slate-400 font-bold">要復習 (Due)</p>
+            <p id="statDueCards" class="text-lg font-black text-amber-500">0</p>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+            <p class="text-[10px] text-slate-400 font-bold">総間違い回数</p>
+            <p id="statTotalErrors" class="text-lg font-black text-rose-500">0</p>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+            <p class="text-[10px] text-slate-400 font-bold">平均正解率</p>
+            <p id="statAvgAccuracy" class="text-lg font-black text-emerald-500">100%</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- TABS: DECKS vs ANALYTICS -->
+      <div class="flex border-b border-slate-200">
+        <button id="tabBtnDecks" onclick="app.switchTab('decks')" class="flex-1 py-2 text-xs font-bold border-b-2 border-indigo-600 text-indigo-600 text-center">
+          📁 デッキ選択 (階層ツリー)
+        </button>
+        <button id="tabBtnAnalytics" onclick="app.switchTab('analytics')" class="flex-1 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 text-center hover:text-slate-600">
+          📊 誤答・進捗分析
+        </button>
+      </div>
+
+      <!-- TAB CONTENT 1: DECK TREE -->
+      <div id="tabDecks" class="space-y-4">
+        <div class="flex items-center justify-between">
+          <p class="text-xs font-bold text-slate-600">学習するフォルダ/デッキを選択</p>
+          <span class="text-[11px] text-slate-400">タップで選択</span>
+        </div>
+        <div id="deckTreeContainer" class="bg-white rounded-2xl border border-slate-200/80 p-2 shadow-sm space-y-1">
+          <!-- Tree injected via JS -->
+        </div>
+
+        <!-- SETUP STUDY CONFIGURATION -->
+        <div id="studySetupPanel" class="hidden bg-white rounded-2xl border border-indigo-100 p-4 shadow-sm space-y-3.5">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <i data-lucide="play-circle" class="w-5 h-5 text-indigo-600"></i>
+              <h3 id="selectedDeckName" class="font-bold text-slate-800 text-sm">基本表現</h3>
+            </div>
+            <span id="selectedDeckCount" class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-bold">0件</span>
+          </div>
+
+          <!-- YARUKAZU (COUNT) CUSTOMIZATION -->
+          <div>
+            <label class="text-xs font-bold text-slate-600 mb-1.5 block">1回の学習枚数 (やる数)</label>
+            <div class="grid grid-cols-5 gap-1.5">
+              <button onclick="app.setCardLimit(10)" class="limit-btn border rounded-lg py-1.5 text-xs font-bold bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:border-indigo-300">10枚</button>
+              <button onclick="app.setCardLimit(20)" class="limit-btn border rounded-lg py-1.5 text-xs font-bold bg-indigo-600 text-white border-indigo-600">20枚</button>
+              <button onclick="app.setCardLimit(50)" class="limit-btn border rounded-lg py-1.5 text-xs font-bold bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:border-indigo-300">50枚</button>
+              <button onclick="app.setCardLimit(0)" class="limit-btn border rounded-lg py-1.5 text-xs font-bold bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:border-indigo-300">全件</button>
+              <input type="number" id="customLimitInput" placeholder="指定" onchange="app.setCustomLimit(this.value)" class="border border-slate-200 rounded-lg text-center text-xs font-bold bg-slate-50 focus:bg-white focus:border-indigo-500 outline-none">
+            </div>
+          </div>
+
+          <!-- ORDER PRIORITY -->
+          <div>
+            <label class="text-xs font-bold text-slate-600 mb-1.5 block">出題順序</label>
+            <select id="studyOrderSelect" class="w-full bg-slate-50 border border-slate-200 rounded-lg py-1.5 px-3 text-xs font-semibold text-slate-700 outline-none">
+              <option value="dueFirst">要復習カード・間違い優先</option>
+              <option value="errorsFirst">誤答回数が多い順 (苦手集中)</option>
+              <option value="random">ランダムシャッフル</option>
+            </select>
+          </div>
+
+          <button onclick="app.startStudy()" class="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white py-3 rounded-xl font-bold text-sm shadow-md shadow-indigo-200 transition-all flex items-center justify-center gap-2">
+            <i data-lucide="zap" class="w-4 h-4"></i>
+            <span>学習を開始する</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- TAB CONTENT 2: ANALYTICS & ERROR LIST -->
+      <div id="tabAnalytics" class="hidden space-y-3">
+        <div class="flex items-center justify-between">
+          <p class="text-xs font-bold text-slate-600">カード別 誤答・正解率一覧</p>
+          <span class="text-[11px] text-slate-400">間違いが多い順</span>
+        </div>
+        <div id="analyticsList" class="space-y-2 max-h-[450px] overflow-y-auto pr-1">
+          <!-- Injected via JS -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- VIEW 3: STUDY SESSION (MOBILE OPTIMIZED, DOWNWARD EXPAND, NO PREV/NEXT) -->
+    <div id="viewStudy" class="hidden flex-1 flex flex-col justify-between py-2">
+      
+      <!-- TOP STUDY BAR -->
+      <div class="flex items-center justify-between text-xs font-bold text-slate-500 mb-2 px-1">
+        <button onclick="app.exitStudy()" class="flex items-center gap-1 text-slate-400 hover:text-slate-600">
+          <i data-lucide="x" class="w-4 h-4"></i>
+          <span>中断</span>
+        </button>
+        <div class="flex items-center gap-2">
+          <span id="studyProgressText" class="text-indigo-600">1 / 20</span>
+        </div>
+      </div>
+
+      <!-- PROGRESS BAR -->
+      <div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden mb-4">
+        <div id="studyProgressBar" class="bg-indigo-600 h-full w-0 transition-all duration-300"></div>
+      </div>
+
+      <!-- CARD CONTAINER -->
+      <div class="flex-1 flex flex-col justify-center">
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+          
+          <!-- FRONT CONTENT (QUESTION) -->
+          <div class="space-y-2">
+            <div class="flex justify-between items-center">
+              <span class="text-[10px] font-extrabold text-slate-400 tracking-wider uppercase">QUESTION</span>
+              <span id="cardErrorBadge" class="hidden text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-full">ミス 2回</span>
+            </div>
+            <div id="cardFront" class="text-base font-medium text-slate-800 leading-relaxed min-h-[60px] flex items-center">
+              <!-- Front text -->
+            </div>
+          </div>
+
+          <!-- SHOW ANSWER BUTTON -->
+          <button id="btnShowAnswer" onclick="app.showAnswer()" class="w-full bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all">
+            <i data-lucide="eye" class="w-4 h-4"></i>
+            <span>答えを表示</span>
+          </button>
+
+          <!-- BACK CONTENT (ANSWER - EXPANDS DOWNWARD) -->
+          <div id="answerWrapper" class="answer-expansion border-t border-slate-100 pt-3 space-y-2">
+            <span class="text-[10px] font-extrabold text-indigo-500 tracking-wider uppercase">ANSWER</span>
+            <div id="cardBack" class="text-base font-semibold text-slate-900 leading-relaxed min-h-[60px]">
+              <!-- Back text -->
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- RATING BUTTONS (SHOWN AFTER ANSWER IS REVEALED) -->
+      <div id="ratingControls" class="hidden pt-4 space-y-2">
+        <div class="grid grid-cols-4 gap-1.5">
+          <!-- AGAIN -->
+          <button onclick="app.rateCard('again')" class="flex flex-col items-center justify-center bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 py-2.5 rounded-xl transition-all active:scale-[0.98]">
+            <span id="badgeAgain" class="text-[10px] font-extrabold bg-rose-200/60 text-rose-800 px-1.5 py-0.5 rounded mb-1">1分後</span>
+            <span class="text-xs font-black">❌ もう一度</span>
+          </button>
+          <!-- HARD -->
+          <button onclick="app.rateCard('hard')" class="flex flex-col items-center justify-center bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 py-2.5 rounded-xl transition-all active:scale-[0.98]">
+            <span id="badgeHard" class="text-[10px] font-extrabold bg-amber-200/60 text-amber-800 px-1.5 py-0.5 rounded mb-1">3分後</span>
+            <span class="text-xs font-black">⚠️ 難しい</span>
+          </button>
+          <!-- GOOD -->
+          <button onclick="app.rateCard('good')" class="flex flex-col items-center justify-center bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 py-2.5 rounded-xl transition-all active:scale-[0.98]">
+            <span id="badgeGood" class="text-[10px] font-extrabold bg-indigo-200/60 text-indigo-800 px-1.5 py-0.5 rounded mb-1">8分後</span>
+            <span class="text-xs font-black">✅ 良い</span>
+          </button>
+          <!-- EASY -->
+          <button onclick="app.rateCard('easy')" class="flex flex-col items-center justify-center bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 py-2.5 rounded-xl transition-all active:scale-[0.98]">
+            <span id="badgeEasy" class="text-[10px] font-extrabold bg-emerald-200/60 text-emerald-800 px-1.5 py-0.5 rounded mb-1">20分後</span>
+            <span class="text-xs font-black">🌟 簡単</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <script>
+    /**
+     * AlgoCards - Core Application Logic
+     */
+    class AlgoApp {
+      constructor() {
+        this.cards = [];
+        this.decks = {};
+        this.mediaMap = {}; // filename -> blob URL
+        this.selectedDeckPath = null;
+        this.selectedLimit = 20;
+        
+        // Study session state
+        this.activeQueue = [];
+        this.currentIndex = 0;
+        this.sessionTotal = 0;
+        this.currentCard = null;
+
+        // Ultra short-span intervals (minutes)
+        this.INTERVALS = {
+          again: 1,
+          hardSteps: [3, 10, 30, 120, 360, 720],
+          goodSteps: [8, 25, 60, 180, 480, 1440],
+          easySteps: [20, 60, 240, 720, 2880]
+        };
+      }
+
+      init() {
+        lucide.createIcons();
+      }
+
+      showHome() {
+        document.getElementById('viewUpload').classList.remove('hidden');
+        document.getElementById('viewDashboard').classList.add('hidden');
+        document.getElementById('viewStudy').classList.add('hidden');
+        document.getElementById('headerActions').classList.add('hidden');
+      }
+
+      showDashboard() {
+        document.getElementById('viewUpload').classList.add('hidden');
+        document.getElementById('viewDashboard').classList.remove('hidden');
+        document.getElementById('viewStudy').classList.add('hidden');
+        document.getElementById('headerActions').classList.remove('hidden');
+        this.renderStats();
+        this.renderDeckTree();
+        this.renderAnalytics();
+      }
+
+      triggerJsonInput() {
+        document.getElementById('jsonInput').click();
+      }
+
+      /* ----------------------------------------------------
+       * STEP 1: APKG FILE PROCESSING
+       * ---------------------------------------------------- */
+      async handleApkgUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const spinner = document.getElementById('loadingSpinner');
+        spinner.classList.remove('hidden');
+
+        try {
+          const zip = await JSZip.loadAsync(file);
+          
+          // 1. Extract Media
+          this.mediaMap = {};
+          const mediaFile = zip.file('media');
+          if (mediaFile) {
+            const mediaJsonText = await mediaFile.async('text');
+            try {
+              const mediaMapping = JSON.parse(mediaJsonText);
+              for (const [key, filename] of Object.entries(mediaMapping)) {
+                const imgFile = zip.file(key);
+                if (imgFile) {
+                  const blob = await imgFile.async('blob');
+                  this.mediaMap[filename] = URL.createObjectURL(blob);
+                }
+              }
+            } catch (e) {
+              console.warn("Media parsing failed", e);
+            }
+          }
+
+          // 2. Find Database
+          let dbFile = zip.file('collection.anki21') || zip.file('collection.anki2');
+          if (!dbFile) {
+            throw new Error("Ankiデータベース (.anki2 / .anki21) が見つかりません。");
+          }
+
+          const dbBuffer = await dbFile.async('arraybuffer');
+          const SQL = await initSqlJs({ locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}` });
+          const db = new SQL.Database(new Uint8Array(dbBuffer));
+
+          // 3. Read Decks & Cards
+          this.cards = [];
+          this.decks = {};
+
+          // Fetch Decks
+          const deckRes = db.exec("SELECT decks FROM col");
+          let deckNameMap = {};
+          if (deckRes.length > 0 && deckRes[0].values.length > 0) {
+            try {
+              const rawDecks = JSON.parse(deckRes[0].values[0][0]);
+              for (const dId in rawDecks) {
+                deckNameMap[dId] = rawDecks[dId].name;
+              }
+            } catch (e) {}
+          }
+
+          // Fetch Notes and Cards
+          const query = `
+            SELECT cards.id, cards.did, notes.flds 
+            FROM cards 
+            JOIN notes ON cards.nid = notes.id
+          `;
+          const res = db.exec(query);
+
+          if (res.length > 0) {
+            const rows = res[0].values;
+            rows.forEach(row => {
+              const [cardId, deckId, flds] = row;
+              const fields = flds.split('\x1f');
+              const front = this.cleanMediaTags(fields[0] || '');
+              const back = this.cleanMediaTags(fields[1] || fields.slice(1).join('<br>') || '');
+              const deckPath = deckNameMap[deckId] || 'Default';
+
+              this.cards.push({
+                id: String(cardId),
+                deckPath: deckPath,
+                front: front,
+                back: back,
+                // Short-span FSRS state
+                level: 0,
+                errorCount: 0,
+                correctCount: 0,
+                nextDueDate: Date.now()
+              });
+            });
+          }
+
+          spinner.classList.add('hidden');
+          this.showDashboard();
+
+        } catch (err) {
+          alert('ファイル読み込みエラー: ' + err.message);
+          spinner.classList.add('hidden');
+        }
+      }
+
+      /* Clean Anki Sound / Image tags for Web rendering */
+      cleanMediaTags(html) {
+        if (!html) return '';
+        let cleaned = html.replace(/\[sound:(.*?)\]/g, (match, filename) => {
+          const src = this.mediaMap[filename];
+          return src ? `<audio controls src="${src}" class="my-2 max-w-full"></audio>` : '';
+        });
+        cleaned = cleaned.replace(/<img[^>]*src=["']?([^"'>]+)["']?[^>]*>/gi, (match, src) => {
+          const filename = src.split('/').pop();
+          const mappedSrc = this.mediaMap[filename] || src;
+          return `<img src="${mappedSrc}" class="max-w-full h-auto rounded-lg my-2 mx-auto border border-slate-200 shadow-sm" />`;
+        });
+        return cleaned;
+      }
+
+      /* ----------------------------------------------------
+       * STEP 2: MERGE JSON PROGRESS DATA
+       * ---------------------------------------------------- */
+      async handleJsonUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = JSON.parse(e.target.result);
+            if (!data.cards || !Array.isArray(data.cards)) {
+              throw new Error("無効な進捗データ形式です。");
+            }
+
+            let mergedCount = 0;
+            const progressMap = new Map(data.cards.map(c => [c.id, c]));
+
+            this.cards.forEach(card => {
+              if (progressMap.has(card.id)) {
+                const saved = progressMap.get(card.id);
+                card.level = saved.level || 0;
+                card.errorCount = saved.errorCount || 0;
+                card.correctCount = saved.correctCount || 0;
+                card.nextDueDate = saved.nextDueDate || Date.now();
+                mergedCount++;
+              }
+            });
+
+            alert(`成功: ${mergedCount} 件のカードの学習進捗データを復元・同期しました。`);
+            this.renderStats();
+            this.renderAnalytics();
+          } catch (err) {
+            alert("JSON読み込み失敗: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+      }
+
+      /* EXPORT ALL DATA TO JSON */
+      exportProgressJson() {
+        const exportData = {
+          version: "1.0",
+          exportedAt: new Date().toISOString(),
+          cards: this.cards.map(c => ({
+            id: c.id,
+            deckPath: c.deckPath,
+            front: c.front,
+            back: c.back,
+            level: c.level,
+            errorCount: c.errorCount,
+            correctCount: c.correctCount,
+            nextDueDate: c.nextDueDate
+          }))
+        };
+
+        const jsonStr = JSON.stringify(exportData, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `AlgoCards_Progress_${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      /* ----------------------------------------------------
+       * DECK TREE & UI RENDERING
+       * ---------------------------------------------------- */
+      renderDeckTree() {
+        const container = document.getElementById('deckTreeContainer');
+        container.innerHTML = '';
+
+        // Build folder tree structure from "A::B::C"
+        const tree = {};
+        this.cards.forEach(card => {
+          const parts = card.deckPath.split('::');
+          let curr = tree;
+          parts.forEach((p, idx) => {
+            if (!curr[p]) {
+              curr[p] = { _count: 0, _path: parts.slice(0, idx + 1).join('::'), _children: {} };
+            }
+            curr[p]._count++;
+            curr = curr[p]._children;
+          });
+        });
+
+        const renderNode = (nodes, depth = 0) => {
+          let html = '';
+          for (const key in nodes) {
+            const node = nodes[key];
+            const hasChildren = Object.keys(node._children).length > 0;
+            const path = node._path;
+            
+            html += `
+              <div class="space-y-1">
+                <div onclick="app.selectDeckPath('${path}')" class="flex items-center justify-between p-2 rounded-xl hover:bg-indigo-50/70 cursor-pointer transition-colors ${this.selectedDeckPath === path ? 'bg-indigo-100/80 border border-indigo-200' : ''}" style="padding-left: ${depth * 16 + 8}px">
+                  <div class="flex items-center gap-2 overflow-hidden">
+                    <i data-lucide="${hasChildren ? 'folder-open' : 'file-text'}" class="w-4 h-4 text-indigo-500 shrink-0"></i>
+                    <span class="text-xs font-bold text-slate-700 truncate">${key}</span>
+                  </div>
+                  <span class="text-[11px] font-extrabold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">${node._count}</span>
+                </div>
+                ${hasChildren ? `<div>${renderNode(node._children, depth + 1)}</div>` : ''}
+              </div>
+            `;
+          }
+          return html;
+        };
+
+        container.innerHTML = renderNode(tree);
+        lucide.createIcons();
+      }
+
+      selectDeckPath(path) {
+        this.selectedDeckPath = path;
+        this.renderDeckTree();
+        
+        const count = this.cards.filter(c => c.deckPath.startsWith(path)).length;
+        document.getElementById('selectedDeckName').innerText = path.split('::').pop();
+        document.getElementById('selectedDeckCount').innerText = `${count}件`;
+        document.getElementById('studySetupPanel').classList.remove('hidden');
+      }
+
+      setCardLimit(limit) {
+        this.selectedLimit = limit;
+        document.querySelectorAll('.limit-btn').forEach(btn => {
+          btn.classList.remove('bg-indigo-600', 'text-white', 'border-indigo-600');
+          btn.classList.add('bg-slate-50', 'text-slate-700', 'border-slate-200');
+        });
+        event.target.classList.remove('bg-slate-50', 'text-slate-700', 'border-slate-200');
+        event.target.classList.add('bg-indigo-600', 'text-white', 'border-indigo-600');
+      }
+
+      setCustomLimit(val) {
+        const num = parseInt(val, 10);
+        if (num > 0) this.selectedLimit = num;
+      }
+
+      switchTab(tab) {
+        if (tab === 'decks') {
+          document.getElementById('tabDecks').classList.remove('hidden');
+          document.getElementById('tabAnalytics').classList.add('hidden');
+          document.getElementById('tabBtnDecks').className = "flex-1 py-2 text-xs font-bold border-b-2 border-indigo-600 text-indigo-600 text-center";
+          document.getElementById('tabBtnAnalytics').className = "flex-1 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 text-center hover:text-slate-600";
+        } else {
+          document.getElementById('tabDecks').classList.add('hidden');
+          document.getElementById('tabAnalytics').classList.remove('hidden');
+          document.getElementById('tabBtnDecks').className = "flex-1 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 text-center hover:text-slate-600";
+          document.getElementById('tabBtnAnalytics').className = "flex-1 py-2 text-xs font-bold border-b-2 border-indigo-600 text-indigo-600 text-center";
+        }
+      }
+
+      renderStats() {
+        const total = this.cards.length;
+        const now = Date.now();
+        const due = this.cards.filter(c => c.nextDueDate <= now).length;
+        const totalErrors = this.cards.reduce((sum, c) => sum + c.errorCount, 0);
+        const totalAnswers = this.cards.reduce((sum, c) => sum + c.errorCount + c.correctCount, 0);
+        const accuracy = totalAnswers > 0 ? Math.round(((totalAnswers - totalErrors) / totalAnswers) * 100) : 100;
+
+        document.getElementById('statTotalCards').innerText = `全 ${total} カード`;
+        document.getElementById('statDueCards').innerText = due;
+        document.getElementById('statTotalErrors').innerText = totalErrors;
+        document.getElementById('statAvgAccuracy').innerText = `${accuracy}%`;
+      }
+
+      renderAnalytics() {
+        const list = document.getElementById('analyticsList');
+        list.innerHTML = '';
+
+        // Sort by highest error count
+        const sorted = [...this.cards].sort((a, b) => b.errorCount - a.errorCount);
+
+        sorted.forEach(c => {
+          const totalAns = c.errorCount + c.correctCount;
+          const acc = totalAns > 0 ? Math.round((c.correctCount / totalAns) * 100) : 100;
+
+          const item = document.createElement('div');
+          item.className = "bg-white p-3 rounded-xl border border-slate-200/80 shadow-sm space-y-1";
+          item.innerHTML = `
+            <div class="flex justify-between items-start gap-2">
+              <p class="text-xs font-bold text-slate-800 line-clamp-1">${c.front.replace(/<[^>]*>/g, '') || '画像/メディアカード'}</p>
+              <span class="text-[10px] font-black px-2 py-0.5 rounded-full ${c.errorCount > 0 ? 'bg-rose-50 text-rose-600 border border-rose-100' : 'bg-slate-50 text-slate-400'}">
+                ミス ${c.errorCount}回
+              </span>
+            </div>
+            <div class="flex justify-between items-center text-[10px] text-slate-400 font-semibold">
+              <span>正解率: ${acc}% (Lv.${c.level})</span>
+              <span>${c.deckPath}</span>
+            </div>
+          `;
+          list.appendChild(item);
+        });
+      }
+
+      /* ----------------------------------------------------
+       * STUDY SESSION ENGINE
+       * ---------------------------------------------------- */
+      startStudy() {
+        let pool = this.cards.filter(c => c.deckPath.startsWith(this.selectedDeckPath));
+        if (pool.length === 0) return;
+
+        const order = document.getElementById('studyOrderSelect').value;
+        if (order === 'dueFirst') {
+          pool.sort((a, b) => a.nextDueDate - b.nextDueDate);
+        } else if (order === 'errorsFirst') {
+          pool.sort((a, b) => b.errorCount - a.errorCount);
+        } else {
+          pool.sort(() => Math.random() - 0.5);
+        }
+
+        if (this.selectedLimit > 0) {
+          pool = pool.slice(0, this.selectedLimit);
+        }
+
+        this.activeQueue = pool;
+        this.currentIndex = 0;
+        this.sessionTotal = pool.length;
+
+        document.getElementById('viewDashboard').classList.add('hidden');
+        document.getElementById('viewStudy').classList.remove('hidden');
+
+        this.loadCurrentCard();
+      }
+
+      loadCurrentCard() {
+        if (this.activeQueue.length === 0) {
+          alert("お疲れ様でした！今回のセッションのカードをすべて習得しました。");
+          this.showDashboard();
+          return;
+        }
+
+        this.currentCard = this.activeQueue[0];
+
+        // UI resets
+        document.getElementById('cardFront').innerHTML = this.currentCard.front;
+        document.getElementById('cardBack').innerHTML = this.currentCard.back;
+
+        // Hide answer expansion
+        const answerWrapper = document.getElementById('answerWrapper');
+        answerWrapper.classList.remove('expanded');
+        document.getElementById('btnShowAnswer').classList.remove('hidden');
+        document.getElementById('ratingControls').classList.add('hidden');
+
+        // Error badge
+        const badge = document.getElementById('cardErrorBadge');
+        if (this.currentCard.errorCount > 0) {
+          badge.innerText = `ミス ${this.currentCard.errorCount}回`;
+          badge.classList.remove('hidden');
+        } else {
+          badge.classList.add('hidden');
+        }
+
+        // Progress text
+        document.getElementById('studyProgressText').innerText = `${this.sessionTotal - this.activeQueue.length + 1} / ${this.sessionTotal}`;
+        const pct = Math.round(((this.sessionTotal - this.activeQueue.length) / this.sessionTotal) * 100);
+        document.getElementById('studyProgressBar').style.width = `${pct}%`;
+
+        // Update interval badges
+        this.updateRatingBadges(this.currentCard);
+      }
+
+      showAnswer() {
+        document.getElementById('answerWrapper').classList.add('expanded');
+        document.getElementById('btnShowAnswer').classList.add('hidden');
+        document.getElementById('ratingControls').classList.remove('hidden');
+      }
+
+      formatMin(min) {
+        if (min < 60) return `${min}分後`;
+        if (min < 1440) return `${Math.round(min / 60)}時間後`;
+        return `${Math.round(min / 1440)}日後`;
+      }
+
+      updateRatingBadges(card) {
+        const lvl = card.level || 0;
+        document.getElementById('badgeAgain').innerText = this.formatMin(this.INTERVALS.again);
+        document.getElementById('badgeHard').innerText = this.formatMin(this.INTERVALS.hardSteps[Math.min(lvl, 5)]);
+        document.getElementById('badgeGood').innerText = this.formatMin(this.INTERVALS.goodSteps[Math.min(lvl, 5)]);
+        document.getElementById('badgeEasy').innerText = this.formatMin(this.INTERVALS.easySteps[Math.min(lvl, 4)]);
+      }
+
+      rateCard(rating) {
+        const card = this.activeQueue.shift(); // Remove from front
+
+        if (rating === 'again') {
+          card.errorCount++;
+          card.level = 0;
+          card.nextDueDate = Date.now() + this.INTERVALS.again * 60 * 1000;
+          // Re-insert into current active queue after 3 items
+          const insertIdx = Math.min(3, this.activeQueue.length);
+          this.activeQueue.splice(insertIdx, 0, card);
+        } else {
+          card.correctCount++;
+          let addMin = 0;
+          if (rating === 'hard') {
+            addMin = this.INTERVALS.hardSteps[Math.min(card.level, 5)];
+          } else if (rating === 'good') {
+            addMin = this.INTERVALS.goodSteps[Math.min(card.level, 5)];
+            card.level++;
+          } else if (rating === 'easy') {
+            addMin = this.INTERVALS.easySteps[Math.min(card.level, 4)];
+            card.level += 2;
+          }
+          card.nextDueDate = Date.now() + addMin * 60 * 1000;
+        }
+
+        this.loadCurrentCard();
+      }
+
+      exitStudy() {
+        if (confirm("学習を中断してダッシュボードに戻りますか？")) {
+          this.showDashboard();
+        }
+      }
+    }
+
+    const app = new AlgoApp();
+    window.onload = () => app.init();
+  </script>
+</body>
+</html>
