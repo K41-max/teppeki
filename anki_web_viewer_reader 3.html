@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html lang="ja" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AlgoCards - Anki Web Reader & 超短スパン暗記エンジン</title>
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        algo: {
+                            50: '#f0f4ff',
+                            100: '#e0e7ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                        }
+                    },
+                    boxShadow: {
+                        'soft': '0 4px 20px -2px rgba(0, 0, 0, 0.05)',
+                        'float': '0 -6px 24px rgba(0, 0, 0, 0.08)',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;900&display=swap');
+
+        body {
+            font-family: 'Plus Jakarta Sans', 'Noto Sans JP', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #f8fafc;
+            color: #0f172a;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .pb-safe {
+            padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
+        }
+
+        /* Card Content Formatting */
+        .card-content {
+            word-break: break-word;
+            overflow-wrap: break-word;
+            line-height: 1.6;
+        }
+        .card-content img {
+            max-width: 100%;
+            max-height: 240px;
+            height: auto;
+            margin: 0.75rem auto;
+            border-radius: 0.75rem;
+            object-fit: contain;
+            display: block;
+        }
+        .card-content cloze {
+            color: #4f46e5;
+            font-weight: 800;
+            background-color: #e0e7ff;
+            padding: 0.15rem 0.45rem;
+            border-radius: 0.35rem;
+            border-bottom: 2px solid #818cf8;
+        }
+
+        @keyframes fadeInSlide {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn {
+            animation: fadeInSlide 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 9999px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col bg-slate-50 text-slate-800 antialiased selection:bg-indigo-100 selection:text-indigo-700">
+
+    <header class="border-b border-slate-200/80 bg-white/90 backdrop-blur-md sticky top-0 z-40 shadow-xs">
+        <div class="max-w-xl mx-auto px-4 h-14 flex items-center justify-between">
+            <div class="flex items-center space-x-2.5 cursor-pointer" onclick="switchTab('dashboard')">
+                <div class="bg-indigo-600 p-2 rounded-xl text-white shadow-md shadow-indigo-500/20">
+                    <i class="fa-solid fa-bolt text-sm"></i>
+                </div>
+                <div>
+                    <span class="font-black text-base tracking-tight text-slate-900 block leading-none">
+                        AlgoCards
+                    </span>
+                    <span class="text-[9px] font-extrabold text-indigo-600 uppercase tracking-wider">
+                        Anki Web Engine
+                    </span>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-2">
+                <!-- Hidden JSON Import/Export Buttons for Header when deck loaded -->
+                <button id="btnImportHeader" onclick="triggerJsonFileInput()" class="hidden text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-xl font-bold border border-slate-200 transition flex items-center">
+                    <i class="fa-solid fa-upload mr-1 text-indigo-600"></i> 進捗JSON読込
+                </button>
+                <button id="btnExportHeader" onclick="exportProgressJson()" class="hidden text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2.5 py-1.5 rounded-xl font-bold border border-indigo-200 transition flex items-center">
+                    <i class="fa-solid fa-download mr-1"></i> 保存
+                </button>
+                <button id="btnReupload" onclick="resetApp()" class="hidden text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 p-2 rounded-xl font-bold border border-slate-200 transition" title="別の.apkgを読み込む">
+                    <i class="fa-solid fa-rotate-right"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hidden Input Fields for Files -->
+    <input type="file" id="apkgFileInput" accept=".apkg,.zip,application/zip,application/octet-stream,*" class="hidden" onchange="handleApkgFileSelect(event)">
+    <input type="file" id="jsonFileInput" accept=".json,application/json" class="hidden" onchange="handleJsonFileSelect(event)">
+
+    <main class="flex-1 max-w-xl w-full mx-auto px-4 py-4 flex flex-col">
+
+        <!-- Initial View: Upload .apkg ONLY -->
+        <section id="uploadSection" class="my-auto py-6 flex flex-col items-center justify-center space-y-4">
+            <div class="w-full space-y-3">
+                
+                <!-- Main .apkg Upload Box -->
+                <div id="dropZone" onclick="triggerApkgFileInput()" class="relative border-2 border-dashed border-indigo-200 hover:border-indigo-500 rounded-3xl p-6 sm:p-8 text-center bg-white shadow-soft transition cursor-pointer">
+                    <div class="flex flex-col items-center space-y-3">
+                        <div class="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-3xl shadow-xs">
+                            <i class="fa-solid fa-box-archive"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-base font-black text-slate-800">.apkg ファイルを選択・タップ</h3>
+                            <p class="text-xs text-slate-500 mt-1">Ankiのデッキファイル（.apkg）を読み込みます</p>
+                        </div>
+                        <span class="inline-flex items-center text-[11px] font-bold text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full border border-indigo-100">
+                            <i class="fa-solid fa-mobile-screen-button mr-1.5"></i> スマホ・PC全機種対応
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Demo Deck Option -->
+                <div class="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-xs text-center space-y-2">
+                    <p class="text-xs text-slate-500 font-medium">.apkg ファイルをお持ちでない方はデモ用デッキで体験できます</p>
+                    <button onclick="loadDemoDeck()" class="w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition flex items-center justify-center">
+                        <i class="fa-solid fa-wand-magic-sparkles mr-2 text-amber-400"></i> デモ用階層デッキで試す
+                    </button>
+                </div>
+
+                <!-- Loading Indicator -->
+                <div id="loadingStatus" class="hidden p-5 rounded-2xl bg-white border border-slate-200 text-center shadow-soft">
+                    <div class="inline-block animate-spin rounded-full h-7 w-7 border-3 border-indigo-600 border-t-transparent mb-2"></div>
+                    <p id="loadingMsg" class="text-xs font-bold text-slate-700">.apkg ファイルを解凍中...</p>
+                    <div class="w-full bg-slate-100 rounded-full h-1.5 mt-3 overflow-hidden">
+                        <div id="loadingProgressBar" class="bg-indigo-600 h-1.5 rounded-full transition-all duration-300 w-0"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="dashboardView" class="hidden flex-1 flex flex-col space-y-4">
+            
+            <!-- Target Summary Header -->
+            <div class="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-5 text-white shadow-md relative overflow-hidden space-y-3">
+                <div class="flex items-center justify-between">
+                    <span id="currentSelectionBadge" class="px-2.5 py-0.5 bg-white/10 text-slate-200 rounded-full text-[11px] font-bold truncate max-w-[220px] border border-white/10">
+                        全体 (すべてのデッキ)
+                    </span>
+                    <button onclick="exportProgressJson()" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold px-3 py-1 rounded-full shadow-xs transition flex items-center">
+                        <i class="fa-solid fa-download mr-1"></i> 進捗を出力
+                    </button>
+                </div>
+
+                <div>
+                    <h2 id="selectedDeckTitle" class="text-xl font-black tracking-tight truncate">全体</h2>
+                    <p class="text-xs text-slate-300 mt-1">1分/5分/15分/45分の超短スパンで記憶を高速定着</p>
+                </div>
+
+                <button onclick="openStudyModal()" class="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-sm shadow-md transition active:scale-98 flex items-center justify-center">
+                    <i class="fa-solid fa-circle-play text-sm mr-2"></i> このまとまりで学習を開始 (枚数を指定)
+                </button>
+            </div>
+
+            <!-- Prominent JSON Progress Import Banner (Appears after .apkg loaded) -->
+            <div class="bg-indigo-50 border border-indigo-200/80 rounded-2xl p-3.5 flex items-center justify-between shadow-xs">
+                <div class="flex items-center space-x-3 min-w-0">
+                    <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center text-sm font-bold shrink-0">
+                        <i class="fa-solid fa-file-import"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <h4 class="text-xs font-extrabold text-slate-900 truncate">以前の学習進捗 (JSON) を取り込む</h4>
+                        <p class="text-[10px] text-slate-500 truncate">保存した学習履歴・誤答数を現在のデッキに適用します</p>
+                    </div>
+                </div>
+                <button onclick="triggerJsonFileInput()" class="shrink-0 text-xs bg-white hover:bg-indigo-100 text-indigo-700 font-extrabold px-3 py-2 rounded-xl border border-indigo-200 transition shadow-xs">
+                    JSONを選択
+                </button>
+            </div>
+
+            <!-- Dashboard Sub Navigation Tabs -->
+            <div class="flex bg-slate-200/80 p-1 rounded-2xl text-xs font-bold">
+                <button id="tabBtnDecks" onclick="switchDashboardTab('tree')" class="flex-1 py-2 rounded-xl bg-white text-indigo-600 shadow-xs transition">
+                    <i class="fa-solid fa-folder-tree mr-1.5"></i> デッキ階層
+                </button>
+                <button id="tabBtnAnalytics" onclick="switchDashboardTab('analytics')" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition">
+                    <i class="fa-solid fa-chart-pie mr-1.5"></i> 誤答・進捗分析
+                </button>
+            </div>
+
+            <!-- Tree Subview -->
+            <div id="subViewTree" class="space-y-4">
+                <!-- Due Stats Grid -->
+                <div class="grid grid-cols-2 gap-2.5">
+                    <div class="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
+                        <div>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">要復習 (Due)</span>
+                            <span id="nodeDueCount" class="text-xl font-black text-amber-600">0</span>
+                        </div>
+                        <div class="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-xs font-bold">
+                            <i class="fa-solid fa-clock"></i>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
+                        <div>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">未学習 (New)</span>
+                            <span id="nodeNewCount" class="text-xl font-black text-blue-600">0</span>
+                        </div>
+                        <div class="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-xs font-bold">
+                            <i class="fa-solid fa-sparkles"></i>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
+                        <div>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">習得済み</span>
+                            <span id="nodeMasteredCount" class="text-xl font-black text-emerald-600">0</span>
+                        </div>
+                        <div class="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xs font-bold">
+                            <i class="fa-solid fa-shield-halved"></i>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
+                        <div>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">総カード数</span>
+                            <span id="nodeTotalCount" class="text-xl font-black text-indigo-600">0</span>
+                        </div>
+                        <div class="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xs font-bold">
+                            <i class="fa-solid fa-layer-group"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Folder Tree Explorer -->
+                <div class="bg-white border border-slate-200/80 rounded-3xl p-4 shadow-xs space-y-3">
+                    <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <div class="flex items-center space-x-2">
+                            <i class="fa-solid fa-folder-tree text-indigo-600 text-sm"></i>
+                            <h3 class="font-extrabold text-slate-800 text-sm">ファイル・デッキツリー</h3>
+                        </div>
+                        <span class="text-[11px] font-medium text-slate-400">フォルダ選択で一括学習</span>
+                    </div>
+
+                    <div id="deckTreeContainer" class="divide-y divide-slate-100 min-h-[160px]">
+                        <!-- Dynamic Tree Content -->
+                    </div>
+                </div>
+            </div>
+
+            <div id="subViewAnalytics" class="hidden space-y-3">
+                <div class="bg-white border border-slate-200/80 rounded-3xl p-4 shadow-xs space-y-3">
+                    <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <div>
+                            <h3 class="font-extrabold text-slate-800 text-sm">カード別の誤答・進捗履歴</h3>
+                            <p class="text-[11px] text-slate-500">間違いの多い苦手カードを特定できます</p>
+                        </div>
+                        <select id="analyticsSortSelect" onchange="renderAnalyticsTable()" class="bg-slate-100 border border-slate-200 text-xs font-bold rounded-xl px-2.5 py-1.5 focus:outline-none">
+                            <option value="wrong_desc">誤答が多い順</option>
+                            <option value="accuracy_asc">正解率が低い順</option>
+                            <option value="reps_desc">総復習回数が多い順</option>
+                        </select>
+                    </div>
+
+                    <div id="analyticsList" class="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                        <!-- Dynamic Analytics Items -->
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <div id="studyModal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+            <div class="bg-white rounded-t-3xl sm:rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-5 border border-slate-100 pb-safe animate-fadeIn">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <span id="modalDeckPath" class="text-[11px] font-bold text-indigo-600 uppercase tracking-wider block truncate max-w-[260px]">選択中: 全体</span>
+                        <h3 class="text-lg font-black text-slate-900 mt-0.5">学習枚数 (やる数) の設定</h3>
+                    </div>
+                    <button onclick="closeStudyModal()" class="text-slate-400 hover:text-slate-600 p-2 rounded-xl">
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </div>
+
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold text-slate-500 uppercase">今回やる枚数</label>
+                    <div class="grid grid-cols-4 gap-2">
+                        <button type="button" onclick="setCountPreset(5)" class="btn-count-preset min-h-[44px] rounded-xl border border-slate-200 font-bold text-xs hover:border-indigo-500">5枚</button>
+                        <button type="button" onclick="setCountPreset(10)" class="btn-count-preset min-h-[44px] rounded-xl border border-indigo-600 bg-indigo-50 text-indigo-600 font-bold text-xs">10枚</button>
+                        <button type="button" onclick="setCountPreset(20)" class="btn-count-preset min-h-[44px] rounded-xl border border-slate-200 font-bold text-xs hover:border-indigo-500">20枚</button>
+                        <button type="button" onclick="setCountPreset(9999)" class="btn-count-preset min-h-[44px] rounded-xl border border-slate-200 font-bold text-xs hover:border-indigo-500">全件</button>
+                    </div>
+                    <div class="flex items-center space-x-2 pt-1">
+                        <span class="text-xs text-slate-500 font-medium">指定枚数:</span>
+                        <input type="number" id="customCardCount" min="1" max="1000" placeholder="例: 15" class="w-28 px-3 py-2 text-xs font-bold border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+                </div>
+
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold text-slate-500 uppercase">出題順序</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="cursor-pointer border border-slate-200 p-2.5 rounded-xl flex items-center space-x-2.5 has-[:checked]:border-indigo-600 has-[:checked]:bg-indigo-50">
+                            <input type="radio" name="orderPriority" value="due" checked class="hidden">
+                            <i class="fa-solid fa-clock text-amber-500 text-xs"></i>
+                            <span class="text-xs font-bold text-slate-800">要復習優先</span>
+                        </label>
+
+                        <label class="cursor-pointer border border-slate-200 p-2.5 rounded-xl flex items-center space-x-2.5 has-[:checked]:border-indigo-600 has-[:checked]:bg-indigo-50">
+                            <input type="radio" name="orderPriority" value="wrong" class="hidden">
+                            <i class="fa-solid fa-triangle-exclamation text-rose-500 text-xs"></i>
+                            <span class="text-xs font-bold text-slate-800">苦手(誤答多)優先</span>
+                        </label>
+
+                        <label class="cursor-pointer border border-slate-200 p-2.5 rounded-xl flex items-center space-x-2.5 has-[:checked]:border-indigo-600 has-[:checked]:bg-indigo-50">
+                            <input type="radio" name="orderPriority" value="new" class="hidden">
+                            <i class="fa-solid fa-sparkles text-blue-500 text-xs"></i>
+                            <span class="text-xs font-bold text-slate-800">未学習優先</span>
+                        </label>
+
+                        <label class="cursor-pointer border border-slate-200 p-2.5 rounded-xl flex items-center space-x-2.5 has-[:checked]:border-indigo-600 has-[:checked]:bg-indigo-50">
+                            <input type="radio" name="orderPriority" value="random" class="hidden">
+                            <i class="fa-solid fa-shuffle text-indigo-500 text-xs"></i>
+                            <span class="text-xs font-bold text-slate-800">ランダム</span>
+                        </label>
+                    </div>
+                </div>
+
+                <button onclick="startCustomStudySession()" class="w-full min-h-[48px] rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-sm shadow-md transition active:scale-98">
+                    学習を開始する
+                </button>
+            </div>
+        </div>
+
+        <section id="studyView" class="hidden flex-1 flex flex-col space-y-3 pb-32">
+            <!-- Study Header Info -->
+            <div class="flex items-center justify-between text-xs font-bold text-slate-500 bg-white px-4 py-2.5 rounded-2xl border border-slate-200/80 shadow-xs">
+                <span id="studyDeckName" class="truncate max-w-[180px] text-slate-800 font-extrabold">
+                    <i class="fa-solid fa-folder text-indigo-500 mr-1.5"></i> デッキ
+                </span>
+                
+                <div class="flex items-center space-x-2">
+                    <span id="cardStepBadge" class="bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full border border-indigo-100 font-extrabold text-[11px]">
+                        1分ステップ
+                    </span>
+                    <span id="studyProgressText" class="bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-full font-bold text-[11px]">
+                        残 10 枚
+                    </span>
+                </div>
+            </div>
+
+            <!-- Single Expandable Card Frame (Downward expansion, no 3D flip) -->
+            <div class="bg-white border border-slate-200/90 rounded-3xl p-5 sm:p-7 shadow-soft space-y-5 flex-1 flex flex-col justify-between min-h-[300px] relative">
+                
+                <!-- Card Front (Prompt) -->
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <span class="text-[10px] font-black tracking-wider text-indigo-600 uppercase bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
+                            表面 (問題)
+                        </span>
+                        <button onclick="speakText('front')" class="text-slate-400 hover:text-indigo-600 p-1.5 rounded-xl hover:bg-slate-50 transition">
+                            <i class="fa-solid fa-volume-high text-sm"></i>
+                        </button>
+                    </div>
+
+                    <div id="cardFrontText" class="card-content text-base sm:text-lg font-bold text-slate-900 pt-1 leading-snug">
+                        <!-- Dynamic Front Text -->
+                    </div>
+                </div>
+
+                <!-- Answer Section (Expands downward upon click) -->
+                <div id="answerSection" class="hidden border-t-2 border-indigo-100 pt-4 space-y-3 animate-fadeIn">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-black tracking-wider text-emerald-600 uppercase bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-100">
+                            裏面 (解答)
+                        </span>
+                        <button onclick="speakText('back')" class="text-slate-400 hover:text-emerald-600 p-1.5 rounded-xl hover:bg-slate-50 transition">
+                            <i class="fa-solid fa-volume-high text-sm"></i>
+                        </button>
+                    </div>
+
+                    <div id="cardBackText" class="card-content text-base font-bold text-slate-800">
+                        <!-- Dynamic Back Text -->
+                    </div>
+                </div>
+
+                <!-- Reveal Answer Button -->
+                <div id="revealBtnContainer" class="pt-4">
+                    <button id="btnRevealAnswer" onclick="revealAnswer()" class="w-full min-h-[52px] bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-base rounded-2xl shadow-md transition active:scale-98 flex items-center justify-center">
+                        <i class="fa-solid fa-eye mr-2"></i> 答えを表示
+                    </button>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <div id="stickyRatingBar" class="hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 p-3 z-40 shadow-float pb-safe">
+        <div class="max-w-xl mx-auto grid grid-cols-4 gap-2">
+            
+            <button onclick="rateCurrentCard('again')" class="min-h-[52px] bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 rounded-2xl flex flex-col items-center justify-center transition active:scale-95 px-1">
+                <span class="text-xs font-black">❌ もう一度</span>
+                <span class="text-[10px] font-bold text-rose-500 mt-0.5">1分後 (即再出題)</span>
+            </button>
+
+            <button onclick="rateCurrentCard('hard')" class="min-h-[52px] bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 rounded-2xl flex flex-col items-center justify-center transition active:scale-95 px-1">
+                <span class="text-xs font-black">⚠️ 難しい</span>
+                <span class="text-[10px] font-bold text-amber-600 mt-0.5">3分後 (ループ)</span>
+            </button>
+
+            <button onclick="rateCurrentCard('good')" class="min-h-[52px] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-2xl flex flex-col items-center justify-center transition active:scale-95 px-1">
+                <span class="text-xs font-black">✅ 良い</span>
+                <span id="goodIntervalLabel" class="text-[10px] font-bold text-indigo-600 mt-0.5">5分後</span>
+            </button>
+
+            <button onclick="rateCurrentCard('easy')" class="min-h-[52px] bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-2xl flex flex-col items-center justify-center transition active:scale-95 px-1">
+                <span class="text-xs font-black">🌟 簡単</span>
+                <span id="easyIntervalLabel" class="text-[10px] font-bold text-emerald-600 mt-0.5">15分後</span>
+            </button>
+
+        </div>
+    </div>
+
+    <!-- Toast Notification Banner -->
+    <div id="toastNotification" class="hidden fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-xs font-extrabold px-4 py-2.5 rounded-2xl shadow-xl flex items-center space-x-2 border border-slate-700 animate-fadeIn">
+        <i class="fa-solid fa-circle-check text-emerald-400 text-sm"></i>
+        <span id="toastMsg">通知メッセージ</span>
+    </div>
+
+    <script>
+        /*
+         * Ultra-Short Spaced Repetition Steps (Minutes):
+         * Step 0: 1 min
+         * Step 1: 5 min
+         * Step 2: 15 min
+         * Step 3: 45 min
+         * Step 4: 2 hours (120 min)
+         * Step 5: 6 hours (360 min)
+         * Step 6+: 12 hours (720 min)
+         */
+        const SHORT_INTERVAL_STEPS = [1, 5, 15, 45, 120, 360, 720];
+
+        // Global State
+        let db = null;
+        let decks = [];
+        let cards = [];
+        let deckTree = null;
+        let selectedNodeKey = 'root';
+        let mediaMap = {};
+
+        // Active Session
+        let activeSessionQueue = [];
+        let currentCardIndex = 0;
+        let targetCardCount = 10;
+        let isAnswerRevealed = false;
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initKeyboardShortcuts();
+            setupDragAndDrop();
+        });
+
+        function triggerApkgFileInput() {
+            document.getElementById('apkgFileInput').click();
+        }
+
+        function triggerJsonFileInput() {
+            document.getElementById('jsonFileInput').click();
+        }
+
+        function setupDragAndDrop() {
+            const dropZone = document.getElementById('dropZone');
+            if (!dropZone) return;
+
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            dropZone.addEventListener('drop', (e) => {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                if (files && files.length > 0) {
+                    processApkgFile(files[0]);
+                }
+            });
+        }
+
+        async function handleApkgFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) processApkgFile(file);
+        }
+
+        async function processApkgFile(file) {
+            showLoading(true, ".apkg ファイルを解凍中...");
+            try {
+                const zip = await JSZip.loadAsync(file);
+                
+                // Process media files
+                const mediaFile = zip.file("media");
+                if (mediaFile) {
+                    const mediaJsonText = await mediaFile.async("string");
+                    const rawMediaMap = JSON.parse(mediaJsonText);
+                    for (const [filename, realName] of Object.entries(rawMediaMap)) {
+                        const imgBlob = await zip.file(filename)?.async("blob");
+                        if (imgBlob) {
+                            mediaMap[realName] = URL.createObjectURL(imgBlob);
+                        }
+                    }
+                }
+
+                updateLoadingProgress(50, "データベースを解析中...");
+
+                let dbFile = zip.file("collection.anki21") || zip.file("collection.anki2");
+                if (!dbFile) throw new Error("Anki データベースが見つかりません。");
+
+                const dbBuffer = await dbFile.async("arraybuffer");
+                const SQL = await initSqlJs({
+                    locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${f}`
+                });
+
+                db = new SQL.Database(new Uint8Array(dbBuffer));
+                parseAnkiDatabase();
+
+                showLoading(false);
+                switchTab('dashboard');
+                document.getElementById('btnReupload').classList.remove('hidden');
+                document.getElementById('btnImportHeader').classList.remove('hidden');
+                document.getElementById('btnExportHeader').classList.remove('hidden');
+
+                showToast("✅ .apkg の読み込みが完了しました！");
+
+            } catch (err) {
+                console.error(err);
+                alert("ファイル解析エラー: " + err.message);
+                showLoading(false);
+            }
+        }
+
+        function parseAnkiDatabase() {
+            const colResult = db.exec("SELECT decks FROM col");
+            let rawDecks = {};
+            if (colResult.length > 0) rawDecks = JSON.parse(colResult[0].values[0][0]);
+
+            decks = Object.values(rawDecks).map(d => ({ id: d.id, name: d.name }));
+
+            const cardsResult = db.exec("SELECT cards.id, cards.did, notes.flds FROM cards JOIN notes ON cards.nid = notes.id");
+            cards = [];
+
+            if (cardsResult.length > 0) {
+                const rows = cardsResult[0].values;
+                const savedSrsData = JSON.parse(localStorage.getItem('algo_srs_data') || '{}');
+
+                rows.forEach(row => {
+                    const [cardId, deckId, flds] = row;
+                    const fieldArray = flds.split('\x1f');
+                    
+                    let front = formatCloze(fieldArray[0] || '', false);
+                    let back = formatCloze(fieldArray[1] || fieldArray.slice(1).join('<br>') || '', true);
+
+                    front = replaceMediaSrc(front);
+                    back = replaceMediaSrc(back);
+
+                    const srs = savedSrsData[cardId] || {
+                        step: 0,
+                        due: Date.now(),
+                        reps: 0,
+                        wrongCount: 0,
+                        correctCount: 0
+                    };
+
+                    cards.push({
+                        id: cardId,
+                        deckId: deckId,
+                        front: front,
+                        back: back,
+                        step: srs.step,
+                        due: srs.due,
+                        reps: srs.reps || 0,
+                        wrongCount: srs.wrongCount || 0,
+                        correctCount: srs.correctCount || 0
+                    });
+                });
+            }
+
+            buildDeckHierarchy();
+            saveCardsToStorage();
+            renderDeckTree();
+            updateDashboardStats();
+        }
+
+        function handleJsonFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const json = JSON.parse(e.target.result);
+                    if (!json.cards || !Array.isArray(json.cards)) {
+                        throw new Error("有効な進捗JSON形式ではありません。");
+                    }
+
+                    let appliedCount = 0;
+                    json.cards.forEach(savedCard => {
+                        // Match card by ID or normalized question text
+                        const match = cards.find(c => c.id === savedCard.id || normalizeText(c.front) === normalizeText(savedCard.front));
+                        if (match) {
+                            match.step = savedCard.step || 0;
+                            match.due = savedCard.due || Date.now();
+                            match.reps = savedCard.reps || 0;
+                            match.wrongCount = savedCard.wrongCount || 0;
+                            match.correctCount = savedCard.correctCount || 0;
+                            appliedCount++;
+                        }
+                    });
+
+                    saveCardsToStorage();
+                    updateDashboardStats();
+                    showToast(`🎉 ${appliedCount} 件の学習進捗を適用しました！`);
+
+                } catch (err) {
+                    alert("JSON進捗取り込みエラー: " + err.message);
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = ''; // Reset input
+        }
+
+        function normalizeText(text) {
+            if (!text) return '';
+            return text.replace(/<[^>]*>/g, '').trim().toLowerCase();
+        }
+
+        function buildDeckHierarchy() {
+            deckTree = {
+                key: 'root',
+                name: '全体 (すべてのデッキ)',
+                deckIds: [],
+                children: {},
+                cardCount: cards.length
+            };
+
+            decks.forEach(deck => {
+                const parts = deck.name.split('::');
+                let currentNode = deckTree;
+                deckTree.deckIds.push(deck.id);
+
+                let currentPath = '';
+                parts.forEach((part) => {
+                    currentPath = currentPath ? `${currentPath}::${part}` : part;
+                    if (!currentNode.children[part]) {
+                        currentNode.children[part] = {
+                            key: currentPath,
+                            name: part,
+                            deckIds: [],
+                            children: {}
+                        };
+                    }
+                    currentNode = currentNode.children[part];
+                    if (!currentNode.deckIds.includes(deck.id)) {
+                        currentNode.deckIds.push(deck.id);
+                    }
+                });
+            });
+        }
+
+        function renderDeckTree() {
+            const container = document.getElementById('deckTreeContainer');
+            container.innerHTML = '';
+
+            const rootElem = createTreeNodeElem(deckTree, 0);
+            container.appendChild(rootElem);
+
+            Object.values(deckTree.children).forEach(child => {
+                renderNodeRecursive(child, container, 0);
+            });
+        }
+
+        function renderNodeRecursive(node, container, depth) {
+            const elem = createTreeNodeElem(node, depth);
+            container.appendChild(elem);
+
+            const children = Object.values(node.children);
+            if (children.length > 0) {
+                const childContainer = document.createElement('div');
+                childContainer.className = 'pl-3 space-y-0.5 border-l-2 border-indigo-100 ml-3.5 my-1';
+                children.forEach(child => {
+                    renderNodeRecursive(child, childContainer, depth + 1);
+                });
+                container.appendChild(childContainer);
+            }
+        }
+
+        function createTreeNodeElem(node, depth) {
+            const div = document.createElement('div');
+            const isSelected = (selectedNodeKey === node.key);
+            const subCardIds = getCardsForNode(node).map(c => c.id);
+            const nodeCards = cards.filter(c => subCardIds.includes(c.id));
+
+            const dueCount = nodeCards.filter(c => c.due <= Date.now() && c.step < 6).length;
+            const newCount = nodeCards.filter(c => c.step === 0).length;
+
+            div.className = `p-2.5 rounded-2xl flex items-center justify-between cursor-pointer transition ${isSelected ? 'bg-indigo-50/90 border border-indigo-200' : 'hover:bg-slate-50'}`;
+            div.onclick = (e) => {
+                e.stopPropagation();
+                selectTreeNode(node.key);
+            };
+
+            const hasChildren = Object.keys(node.children).length > 0;
+
+            div.innerHTML = `
+                <div class="flex items-center space-x-2.5 min-w-0">
+                    ${hasChildren ? `<i class="fa-solid fa-chevron-down text-[10px] text-slate-400"></i>` : `<i class="fa-solid fa-file-text text-[11px] text-slate-300 ml-1"></i>`}
+                    <i class="fa-solid ${node.key === 'root' ? 'fa-layer-group text-indigo-600' : 'fa-folder text-amber-400'} text-sm"></i>
+                    <span class="text-xs font-bold text-slate-800 truncate">${escapeHtml(node.name)}</span>
+                </div>
+                <div class="flex items-center space-x-1.5 shrink-0">
+                    ${dueCount > 0 ? `<span class="bg-amber-100 text-amber-800 font-black px-2 py-0.5 rounded-full text-[10px]">${dueCount}</span>` : ''}
+                    ${newCount > 0 ? `<span class="bg-blue-100 text-blue-800 font-black px-2 py-0.5 rounded-full text-[10px]">${newCount}</span>` : ''}
+                    <span class="text-[11px] font-bold text-slate-400">${nodeCards.length}枚</span>
+                </div>
+            `;
+            return div;
+        }
+
+        function selectTreeNode(key) {
+            selectedNodeKey = key;
+            renderDeckTree();
+            updateDashboardStats();
+        }
+
+        function findNodeByKey(node, key) {
+            if (node.key === key) return node;
+            for (const child of Object.values(node.children)) {
+                const found = findNodeByKey(child, key);
+                if (found) return found;
+            }
+            return null;
+        }
+
+        function getCardsForNode(node) {
+            if (!node) return [];
+            return cards.filter(c => node.deckIds.includes(c.deckId));
+        }
+
+        function updateDashboardStats() {
+            const targetNode = findNodeByKey(deckTree, selectedNodeKey) || deckTree;
+            const targetCards = getCardsForNode(targetNode);
+
+            document.getElementById('selectedDeckTitle').innerText = targetNode.name;
+            document.getElementById('currentSelectionBadge').innerText = `選択中: ${targetNode.name}`;
+            document.getElementById('modalDeckPath').innerText = `選択中: ${targetNode.name}`;
+
+            const now = Date.now();
+            const dueCount = targetCards.filter(c => c.due <= now && c.step < 6).length;
+            const newCount = targetCards.filter(c => c.step === 0).length;
+            const masteredCount = targetCards.filter(c => c.step >= 6).length;
+
+            document.getElementById('nodeDueCount').innerText = dueCount;
+            document.getElementById('nodeNewCount').innerText = newCount;
+            document.getElementById('nodeMasteredCount').innerText = masteredCount;
+            document.getElementById('nodeTotalCount').innerText = targetCards.length;
+
+            renderAnalyticsTable();
+        }
+
+        function switchDashboardTab(tab) {
+            const subTree = document.getElementById('subViewTree');
+            const subAnalytics = document.getElementById('subViewAnalytics');
+            const btnDecks = document.getElementById('tabBtnDecks');
+            const btnAnalytics = document.getElementById('tabBtnAnalytics');
+
+            if (tab === 'tree') {
+                subTree.classList.remove('hidden');
+                subAnalytics.classList.add('hidden');
+                btnDecks.className = 'flex-1 py-2 rounded-xl bg-white text-indigo-600 shadow-xs transition';
+                btnAnalytics.className = 'flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition';
+            } else {
+                subTree.classList.add('hidden');
+                subAnalytics.classList.remove('hidden');
+                btnAnalytics.className = 'flex-1 py-2 rounded-xl bg-white text-indigo-600 shadow-xs transition';
+                btnDecks.className = 'flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition';
+                renderAnalyticsTable();
+            }
+        }
+
+        function renderAnalyticsTable() {
+            const targetNode = findNodeByKey(deckTree, selectedNodeKey) || deckTree;
+            let targetCards = [...getCardsForNode(targetNode)];
+            const sortMode = document.getElementById('analyticsSortSelect').value;
+
+            targetCards.sort((a, b) => {
+                if (sortMode === 'wrong_desc') return (b.wrongCount || 0) - (a.wrongCount || 0);
+                if (sortMode === 'reps_desc') return (b.reps || 0) - (a.reps || 0);
+                if (sortMode === 'accuracy_asc') {
+                    const accA = a.reps ? (a.correctCount / a.reps) : 1;
+                    const accB = b.reps ? (b.correctCount / b.reps) : 1;
+                    return accA - accB;
+                }
+                return 0;
+            });
+
+            const container = document.getElementById('analyticsList');
+            if (targetCards.length === 0) {
+                container.innerHTML = `<div class="text-center py-6 text-xs text-slate-400 font-bold">カードがありません</div>`;
+                return;
+            }
+
+            container.innerHTML = targetCards.map(c => {
+                const totalReps = c.reps || 0;
+                const wrong = c.wrongCount || 0;
+                const correct = c.correctCount || 0;
+                const accuracy = totalReps > 0 ? Math.round((correct / totalReps) * 100) : 0;
+                
+                const plainFront = c.front.replace(/<[^>]*>/g, '').slice(0, 30) || '無題カード';
+
+                return `
+                    <div class="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between text-xs">
+                        <div class="space-y-1 min-w-0 pr-2">
+                            <span class="font-bold text-slate-900 truncate block">${escapeHtml(plainFront)}</span>
+                            <div class="flex items-center space-x-2 text-[10px] text-slate-500 font-bold">
+                                <span>定着Lv.${c.step + 1}</span>
+                                <span>•</span>
+                                <span>復習 ${totalReps} 回</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-2 shrink-0">
+                            <div class="text-right">
+                                <span class="font-black text-rose-600 block text-xs">誤答 ${wrong} 回</span>
+                                <span class="text-[10px] font-bold ${accuracy >= 80 ? 'text-emerald-600' : 'text-amber-600'}">正解率 ${totalReps > 0 ? accuracy + '%' : '-'}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function openStudyModal() {
+            const targetNode = findNodeByKey(deckTree, selectedNodeKey) || deckTree;
+            const nodeCards = getCardsForNode(targetNode);
+
+            if (nodeCards.length === 0) {
+                alert("このフォルダにはカードがありません。");
+                return;
+            }
+            document.getElementById('studyModal').classList.remove('hidden');
+        }
+
+        function closeStudyModal() {
+            document.getElementById('studyModal').classList.add('hidden');
+        }
+
+        function setCountPreset(count) {
+            targetCardCount = count;
+            document.querySelectorAll('.btn-count-preset').forEach(btn => {
+                btn.classList.remove('border-indigo-600', 'bg-indigo-50', 'text-indigo-600');
+                btn.classList.add('border-slate-200');
+            });
+            event.target.classList.add('border-indigo-600', 'bg-indigo-50', 'text-indigo-600');
+            document.getElementById('customCardCount').value = '';
+        }
+
+        function startCustomStudySession() {
+            const customVal = parseInt(document.getElementById('customCardCount').value);
+            if (!isNaN(customVal) && customVal > 0) targetCardCount = customVal;
+
+            const targetNode = findNodeByKey(deckTree, selectedNodeKey) || deckTree;
+            let availableCards = [...getCardsForNode(targetNode)];
+
+            const orderPriority = document.querySelector('input[name="orderPriority"]:checked').value;
+
+            if (orderPriority === 'due') {
+                availableCards.sort((a, b) => (a.due - b.due));
+            } else if (orderPriority === 'wrong') {
+                availableCards.sort((a, b) => (b.wrongCount || 0) - (a.wrongCount || 0));
+            } else if (orderPriority === 'new') {
+                availableCards.sort((a, b) => a.step - b.step);
+            } else {
+                availableCards.sort(() => Math.random() - 0.5);
+            }
+
+            activeSessionQueue = availableCards.slice(0, targetCardCount);
+            if (activeSessionQueue.length === 0) {
+                alert("学習対象のカードがありません。");
+                return;
+            }
+
+            currentCardIndex = 0;
+            closeStudyModal();
+            switchTab('study');
+            renderCurrentStudyCard();
+        }
+
+        function renderCurrentStudyCard() {
+            if (currentCardIndex >= activeSessionQueue.length) {
+                alert("🎉 セッション完了！すべてのカードの超短復習を終えました！");
+                switchTab('dashboard');
+                updateDashboardStats();
+                return;
+            }
+
+            const card = activeSessionQueue[currentCardIndex];
+            isAnswerRevealed = false;
+
+            const deckName = decks.find(d => d.id === card.deckId)?.name || 'デッキ';
+            document.getElementById('studyDeckName').innerHTML = `<i class="fa-solid fa-folder text-indigo-500 mr-1.5"></i> ${escapeHtml(deckName)}`;
+            
+            const stepName = SHORT_INTERVAL_STEPS[Math.min(card.step, SHORT_INTERVAL_STEPS.length - 1)];
+            document.getElementById('cardStepBadge').innerText = `${stepName}分ステップ (Lv.${card.step + 1})`;
+            document.getElementById('studyProgressText').innerText = `残 ${activeSessionQueue.length - currentCardIndex} 枚`;
+
+            document.getElementById('cardFrontText').innerHTML = card.front;
+            document.getElementById('cardBackText').innerHTML = card.back;
+
+            document.getElementById('answerSection').classList.add('hidden');
+            document.getElementById('revealBtnContainer').classList.remove('hidden');
+            document.getElementById('stickyRatingBar').classList.add('hidden');
+
+            const goodStep = Math.min(card.step + 1, SHORT_INTERVAL_STEPS.length - 1);
+            const easyStep = Math.min(card.step + 2, SHORT_INTERVAL_STEPS.length - 1);
+
+            document.getElementById('goodIntervalLabel').innerText = formatIntervalMinutes(SHORT_INTERVAL_STEPS[goodStep]);
+            document.getElementById('easyIntervalLabel').innerText = formatIntervalMinutes(SHORT_INTERVAL_STEPS[easyStep]);
+        }
+
+        function revealAnswer() {
+            if (isAnswerRevealed) return;
+            isAnswerRevealed = true;
+
+            document.getElementById('answerSection').classList.remove('hidden');
+            document.getElementById('revealBtnContainer').classList.add('hidden');
+            document.getElementById('stickyRatingBar').classList.remove('hidden');
+        }
+
+        function rateCurrentCard(rating) {
+            if (!isAnswerRevealed) return;
+
+            const card = activeSessionQueue[currentCardIndex];
+            const now = Date.now();
+
+            card.reps = (card.reps || 0) + 1;
+
+            if (rating === 'again') {
+                card.step = 0;
+                card.due = now + (1 * 60 * 1000);
+                card.wrongCount = (card.wrongCount || 0) + 1;
+                // Re-insert 3 cards later in active queue for short-term loop
+                activeSessionQueue.splice(currentCardIndex + 3, 0, card);
+
+            } else if (rating === 'hard') {
+                card.step = Math.max(0, card.step - 1);
+                card.due = now + (3 * 60 * 1000);
+                card.wrongCount = (card.wrongCount || 0) + 1;
+                activeSessionQueue.push(card);
+
+            } else if (rating === 'good') {
+                card.step = Math.min(card.step + 1, SHORT_INTERVAL_STEPS.length - 1);
+                const nextMins = SHORT_INTERVAL_STEPS[card.step];
+                card.due = now + (nextMins * 60 * 1000);
+                card.correctCount = (card.correctCount || 0) + 1;
+
+            } else if (rating === 'easy') {
+                card.step = Math.min(card.step + 2, SHORT_INTERVAL_STEPS.length - 1);
+                const nextMins = SHORT_INTERVAL_STEPS[card.step];
+                card.due = now + (nextMins * 60 * 1000);
+                card.correctCount = (card.correctCount || 0) + 1;
+            }
+
+            const masterCard = cards.find(c => c.id === card.id);
+            if (masterCard) {
+                masterCard.step = card.step;
+                masterCard.due = card.due;
+                masterCard.reps = card.reps;
+                masterCard.wrongCount = card.wrongCount;
+                masterCard.correctCount = card.correctCount;
+            }
+            saveCardsToStorage();
+
+            currentCardIndex++;
+            renderCurrentStudyCard();
+        }
+
+        function exportProgressJson() {
+            const dataToExport = {
+                exportedAt: new Date().toISOString(),
+                version: "2.1",
+                decks: decks,
+                cards: cards,
+                deckTree: deckTree,
+                selectedNodeKey: selectedNodeKey
+            };
+
+            const jsonStr = JSON.stringify(dataToExport, null, 2);
+            const blob = new Blob([jsonStr], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement("a");
+            a.href = url;
+            const dateStr = new Date().toISOString().slice(0,10);
+            a.download = `AlgoCards_Progress_${dateStr}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast("💾 進捗JSONを出力しました！");
+        }
+
+        function loadDemoDeck() {
+            showLoading(true, "デモデータ読み込み中...");
+
+            decks = [
+                { id: 1, name: "英単語::日常会話" },
+                { id: 2, name: "英単語::ビジネス" },
+                { id: 3, name: "プログラミング::JavaScript" }
+            ];
+
+            const now = Date.now();
+            const demoRaw = [
+                { id: 101, deckId: 1, front: "apple", back: "【名】 りんご 🍎" },
+                { id: 102, deckId: 1, front: "frequently", back: "【副】 頻繁に、しばしば" },
+                { id: 103, deckId: 1, front: "reluctant", back: "【形】 気が進まない、乗り気でない" },
+                { id: 104, deckId: 2, front: "agenda", back: "【名】 議題、協議事項" },
+                { id: 105, deckId: 2, front: "negotiate", back: "【動】 交渉する、取り決める" },
+                { id: 106, deckId: 3, front: "closure (クロージャ)", back: "関数とその関数が宣言されたレキシカル環境の組み合わせ。" },
+                { id: 107, deckId: 3, front: "Promise.all()", back: "複数のPromiseを並列処理し、すべての完了を待つメソッド。" }
+            ];
+
+            cards = demoRaw.map(c => ({
+                id: c.id,
+                deckId: c.deckId,
+                front: c.front,
+                back: c.back,
+                step: 0,
+                due: now,
+                reps: 0,
+                wrongCount: 0,
+                correctCount: 0
+            }));
+
+            buildDeckHierarchy();
+            saveCardsToStorage();
+            showLoading(false);
+
+            switchTab('dashboard');
+            document.getElementById('btnReupload').classList.remove('hidden');
+            document.getElementById('btnImportHeader').classList.remove('hidden');
+            document.getElementById('btnExportHeader').classList.remove('hidden');
+            showToast("✨ デモ用階層デッキを読み込みました！");
+        }
+
+        function formatIntervalMinutes(mins) {
+            if (mins < 60) return `${mins}分後`;
+            if (mins < 1440) return `${Math.round(mins / 60)}時間後`;
+            return `${Math.round(mins / 1440)}日後`;
+        }
+
+        function formatCloze(text, isAnswer) {
+            if (!text) return '';
+            return text.replace(/\{\{c\d+::(.*?)(?:::(.*?))?\}\}/g, (match, p1, p2) => {
+                return isAnswer ? `<cloze>${p1}</cloze>` : `<cloze>${p2 || '[...]'}</cloze>`;
+            });
+        }
+
+        function replaceMediaSrc(html) {
+            if (!html) return '';
+            return html.replace(/src=["']([^"']+)["']/g, (match, filename) => {
+                return mediaMap[filename] ? `src="${mediaMap[filename]}"` : match;
+            });
+        }
+
+        function speakText(type) {
+            const text = document.getElementById(type === 'front' ? 'cardFrontText' : 'cardBackText')?.innerText;
+            if (!text) return;
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-US';
+            window.speechSynthesis.speak(utterance);
+        }
+
+        function switchTab(tab) {
+            document.getElementById('uploadSection').classList.add('hidden');
+            document.getElementById('dashboardView').classList.add('hidden');
+            document.getElementById('studyView').classList.add('hidden');
+
+            if (tab === 'dashboard') {
+                document.getElementById('dashboardView').classList.remove('hidden');
+                updateDashboardStats();
+            } else if (tab === 'study') {
+                document.getElementById('studyView').classList.remove('hidden');
+            } else {
+                document.getElementById('uploadSection').classList.remove('hidden');
+            }
+        }
+
+        function resetApp() {
+            if (confirm("別の .apkg ファイルを選択しますか？")) {
+                location.reload();
+            }
+        }
+
+        function saveCardsToStorage() {
+            const srsMap = {};
+            cards.forEach(c => {
+                srsMap[c.id] = {
+                    step: c.step,
+                    due: c.due,
+                    reps: c.reps,
+                    wrongCount: c.wrongCount,
+                    correctCount: c.correctCount
+                };
+            });
+            localStorage.setItem('algo_srs_data', JSON.stringify(srsMap));
+        }
+
+        function showLoading(show, msg = '') {
+            const status = document.getElementById('loadingStatus');
+            const drop = document.getElementById('dropZone');
+            if (show) {
+                status.classList.remove('hidden');
+                drop.classList.add('hidden');
+                document.getElementById('loadingMsg').innerText = msg;
+            } else {
+                status.classList.add('hidden');
+                drop.classList.remove('hidden');
+            }
+        }
+
+        function updateLoadingProgress(percent, msg) {
+            document.getElementById('loadingProgressBar').style.width = `${percent}%`;
+            if (msg) document.getElementById('loadingMsg').innerText = msg;
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toastNotification');
+            document.getElementById('toastMsg').innerText = msg;
+            toast.classList.remove('hidden');
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 3000);
+        }
+
+        function initKeyboardShortcuts() {
+            document.addEventListener('keydown', (e) => {
+                if (document.getElementById('studyView').classList.contains('hidden')) return;
+
+                if (e.code === 'Space') {
+                    e.preventDefault();
+                    if (!isAnswerRevealed) revealAnswer();
+                    else rateCurrentCard('good');
+                } else if (isAnswerRevealed) {
+                    if (e.key === '1') rateCurrentCard('again');
+                    if (e.key === '2') rateCurrentCard('hard');
+                    if (e.key === '3') rateCurrentCard('good');
+                    if (e.key === '4') rateCurrentCard('easy');
+                }
+            });
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/[&<>"']/g, match => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[match]));
+        }
+    </script>
+</body>
+</html>
